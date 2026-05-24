@@ -76,8 +76,8 @@ python3 lanbridge.py
 ```
 LanBridge aynı ağdaki diğer cihazları otomatik olarak keşfedecek ve ONLINE durumuna geçecektir. Bir cihazda kopyaladığınız her şey anında diğerine akacaktır!
 
-**⚠️ Önemli Uyarılar ve Güvenlik
-Büyük Dosya Koruması: Kotanızı veya RAM'inizi doldurmamak adına, uygulama 50 MB üzerindeki pano dosyalarında sizden arayüz üzerinden onay bekler.
+**⚠️ Önemli Uyarılar ve Güvenlik**
+**Büyük Dosya Koruması: Kotanızı veya RAM'inizi doldurmamak adına, uygulama 50 MB üzerindeki pano dosyalarında sizden arayüz üzerinden onay bekler.**
 
-Ağ Güvenliği: LanBridge, yerel ağ içi P2P (soket bağlantısı) kullandığı için verileri şifrelemeden iletir. Bu nedenle halka açık güvensiz Wi-Fi ağlarında
-(kafe, kütüphane vb.) uygulamayı açık bırakmamanız, yalnızca ev veya güvenli ofis ağlarında kullanmanız önerilir.**
+**Ağ Güvenliği: LanBridge, yerel ağ içi P2P (soket bağlantısı) kullandığı için verileri şifrelemeden iletir. Bu nedenle halka açık güvensiz Wi-Fi ağlarında**
+**(kafe, kütüphane vb.) uygulamayı açık bırakmamanız, yalnızca ev veya güvenli ofis ağlarında kullanmanız önerilir.**
