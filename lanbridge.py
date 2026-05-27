@@ -15,6 +15,29 @@ from pathlib import Path
 from datetime import datetime
 from typing import Callable, Dict, Optional, List
 
+# Tek instance kontrolü
+_INSTANCE_LOCK_PORT = 55102
+_instance_socket = None
+
+def _ensure_single_instance():
+    """Aynı anda sadece bir LanBridge çalışsın. Varsa mevcut olanı öne getir."""
+    global _instance_socket
+    try:
+        _instance_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        _instance_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+        _instance_socket.bind(("127.0.0.1", _INSTANCE_LOCK_PORT))
+        _instance_socket.listen(1)
+        return True
+    except OSError:
+        # Mevcut instance'a "öne gel" sinyali gönder
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(1)
+            s.connect(("127.0.0.1", _INSTANCE_LOCK_PORT))
+            s.sendall(b"SHOW")
+            s.close()
+        except: pass
+        return False
 # ══════════════════════════════════════════════════════════════════════════════
 #  DETACH — terminalden ayrıl
 # ══════════════════════════════════════════════════════════════════════════════
@@ -41,6 +64,11 @@ def _detach_from_terminal():
         print(f"[detach] {e}", file=sys.stderr)
 
 if __name__ == "__main__":
+    # Tek instance kontrolü — detach'ten önce
+    if os.environ.get("LANBRIDGE_DETACHED") == "1":
+        if not _ensure_single_instance():
+            sys.exit(0)  # Zaten çalışıyor, sessizce çık
+    
     if "--debug" not in sys.argv and "--no-detach" not in sys.argv:
         _detach_from_terminal()
 
@@ -148,7 +176,23 @@ def open_folder(path):
     if   platform.system()=="Darwin":  os.system(f'open "{path}"')
     elif platform.system()=="Windows": os.startfile(path)
     else:                              os.system(f'xdg-open "{path}"')
+SETTINGS_FILE = Path.home() / ".lanbridge_settings.json"
 
+def load_setting(key, default=False):
+    try:
+        if SETTINGS_FILE.exists():
+            return json.loads(SETTINGS_FILE.read_text()).get(key, default)
+    except: pass
+    return default
+
+def save_setting(key, value):
+    try:
+        data = {}
+        if SETTINGS_FILE.exists():
+            data = json.loads(SETTINGS_FILE.read_text())
+        data[key] = value
+        SETTINGS_FILE.write_text(json.dumps(data))
+    except: pass
 LOCAL_IP = get_local_ip()
 HOSTNAME = socket.gethostname()
 OS_NAME  = f"{platform.system()} {platform.release()}"
@@ -529,8 +573,22 @@ class SplashScreen:
 # ══════════════════════════════════════════════════════════════════════════════
 #  ANA UYGULAMA
 # ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+#  macOS Tray Handler (global — sınıf bir kez register edilsin)
+# ══════════════════════════════════════════════════════════════════════════════
+_MACOS_TRAY_APP_REF = [None]  # mutable container — app instance burada tutulur
+
+if platform.system() == "Darwin":
+    try:
+        from Foundation import NSObject
+        import objc
+    except Exception:
+        pass
+else:
+    _MacOSTrayHandler = None
 class LanBridgeApp:
     def __init__(self):
+        LanBridgeApp._current_instance = None
         self._peers={}; self._sel_peer=None; self._pulse_phase=0.0
         self._pending = None
         self.stats = Stats()
@@ -543,6 +601,7 @@ class LanBridgeApp:
             try: self.root = TkinterDnD.Tk(); self._dnd = True
             except Exception: self.root = tk.Tk()
         else: self.root = tk.Tk()
+        self.root.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
 
         self.root.withdraw()
         self.root.title(f"{APP_NAME}  —  {HOSTNAME}")
@@ -577,7 +636,18 @@ class LanBridgeApp:
         self._log("folder", f"Alınanlar: {DOWNLOADS}")
         self._log("search", "Ağda LanBridge cihazları aranıyor...")
         self._setup_tray()
+        # Instance lock listener — başka instance açılırsa pencereyi göster
+        threading.Thread(target=self._instance_listener, daemon=True, name="instance-lock").start()
         self._pulse_tick(); self._tick_periodic()
+
+    def _hide_to_tray(self):
+        """Pencereyi kapat ama app'i tepside tut."""
+        # macOS'ta tray kapalıysa direkt çık
+        if sys.platform == 'darwin' and not load_setting("macos_tray_enabled", False):
+            self._do_quit()
+            return
+        self.root.withdraw()
+        
 
     # ══════════════════════════════════════════════════════════════════════════
     #  GUI
@@ -684,6 +754,22 @@ class LanBridgeApp:
         self._clip_preview.pack(fill="both", expand=False, padx=8, pady=(6,4))
         self._clip_badge = tk.Label(clip_card, text="", bg=C["card"],
                                     fg=C["success"], font=(UI[0],8,"italic"))
+        if sys.platform == 'darwin':
+            tk.Frame(clip_card, bg=C["border"], height=1).pack(fill="x", padx=8, pady=(6,4))
+            self._macos_tray_v = tk.BooleanVar(value=load_setting("macos_tray_enabled", False))
+            def _toggle_macos_tray():
+                save_setting("macos_tray_enabled", self._macos_tray_v.get())
+                messagebox.showinfo(
+                    "Yeniden Başlatma Gerekli",
+                    "Değişikliğin uygulanması için uygulamayı yeniden başlatın."
+                )
+            tk.Checkbutton(
+                clip_card, text=" macOS menü çubuğunda göster",
+                variable=self._macos_tray_v, command=_toggle_macos_tray,
+                bg=C["card"], fg=C["text"], selectcolor=C["card"],
+                activebackground=C["card"], activeforeground=C["accent"],
+                font=(UI[0],9), cursor="hand2"
+            ).pack(anchor="w", padx=10, pady=(2,6))
         self._clip_badge.pack(anchor="w", padx=10, pady=(0,6))
 
         # ━━ Ana panel ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1186,34 +1272,133 @@ class LanBridgeApp:
     # ══════════════════════════════════════════════════════════════════════════
     def _setup_tray(self):
         """pystray ile sistem tepsisi/menü çubuğu ikonu kur."""
+        if sys.platform == 'darwin' and not load_setting("macos_tray_enabled", False):
+            self._log("info", "macOS sistem tepsisi devre dışı (Ayarlar'dan açabilirsin)")
+            return
+        
         if not (PYSTRAY_AVAILABLE and PIL_AVAILABLE):
             self._log("warn", "Sistem tepsisi desteği için: pip install pystray")
             return
         try:
             img = make_tray_icon_image()
             if img is None: return
-            menu = pystray.Menu(
-                pystray.MenuItem("LanBridge'i Aç", self._tray_show, default=True),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem("Alınanlar Klasörü",
-                                 lambda: open_folder(str(DOWNLOADS))),
-                pystray.MenuItem(lambda item: f"Cihaz sayısı: {len(self.discovery.peers())}",
-                                 None, enabled=False),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem("Çıkış", self._tray_quit),
-            )
-            self._tray_icon = pystray.Icon(
-                name="LanBridge",
-                icon=img,
-                title=f"LanBridge — {HOSTNAME}",
-                menu=menu,
-            )
-            self._tray_icon.run_detached()
+            
+            if sys.platform == 'darwin':
+                self._setup_macos_tray(img)
+            else:
+                menu = pystray.Menu(
+                    pystray.MenuItem("LanBridge'i Aç", self._tray_show, default=True),
+                    pystray.Menu.SEPARATOR,
+                    pystray.MenuItem("Alınanlar Klasörü",
+                                     lambda: open_folder(str(DOWNLOADS))),
+                    pystray.MenuItem(lambda item: f"Cihaz sayısı: {len(self.discovery.peers())}",
+                                     None, enabled=False),
+                    pystray.Menu.SEPARATOR,
+                    pystray.MenuItem("Çıkış", self._tray_quit),
+                )
+                self._tray_icon = pystray.Icon(
+                    name="LanBridge",
+                    icon=img,
+                    title=f"LanBridge — {HOSTNAME}",
+                    menu=menu,
+                )
+                self._tray_icon.run_detached()
             self._log("ok", "Sistem tepsisi ikonu hazır")
         except Exception as e:
             self._log("warn", f"Tepsi ikonu kurulamadı: {e}")
             self._tray_icon = None
 
+    def _setup_macos_tray(self, img):
+        """macOS NSStatusBar — action'lar sinyal dosyası üzerinden ana thread'e iletilir."""
+        from Cocoa import (NSStatusBar, NSMenu, NSMenuItem, NSImage,
+                           NSApplication, NSApp)
+        import tempfile as _tf, os as _os
+        
+        # NSApp'ı initialize et (Tk ile beraber çalışacak)
+        try: NSApplication.sharedApplication()
+        except Exception: pass
+        
+        tmp_path = _os.path.join(_tf.gettempdir(), "lanbridge_tray.png")
+        img.save(tmp_path)
+        
+        # Sinyal dosyaları — AppleScript ile yazılacak, Python ana thread polling yapacak
+        self._tray_signal_dir = Path(_tf.gettempdir()) / "lanbridge_signals"
+        self._tray_signal_dir.mkdir(exist_ok=True)
+        
+        status_bar = NSStatusBar.systemStatusBar()
+        self._tray_item = status_bar.statusItemWithLength_(-1)
+        
+        ns_img = NSImage.alloc().initByReferencingFile_(tmp_path)
+        ns_img.setSize_((18, 18))
+        self._tray_item.setImage_(ns_img)
+        
+        ns_menu = NSMenu.new()
+        
+        # NSMenuItem action'ları → shell komut çalıştır (Python callback YOK)
+        # Shell komut sinyal dosyası oluşturur, Python tarafı bunu okur
+        sig_show = str(self._tray_signal_dir / "show")
+        sig_folder = str(self._tray_signal_dir / "folder")
+        sig_quit = str(self._tray_signal_dir / "quit")
+        
+        # NSMenuItem target=nil + action=nil → menü item TIKLANABILIR ama callback yok
+        # Bunun yerine view-based item kullan
+        open_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("LanBridge'i Aç", None, "")
+        ns_menu.addItem_(open_item)
+        
+        ns_menu.addItem_(NSMenuItem.separatorItem())
+        
+        folder_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Alınanlar Klasörü", None, "")
+        ns_menu.addItem_(folder_item)
+        
+        ns_menu.addItem_(NSMenuItem.separatorItem())
+        
+        quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Çıkış", None, "")
+        ns_menu.addItem_(quit_item)
+        
+        self._tray_item.setMenu_(ns_menu)
+        self._ns_tray_image_path = tmp_path
+        self._tray_icon = True
+        
+        # Menü item referanslarını sakla — sonra delegate atayacağız
+        self._tray_menu_items = {
+            'show': open_item,
+            'folder': folder_item,
+            'quit': quit_item,
+        }
+        
+        # PyObjC delegate'i Python callback olmadan kuralım
+        self._install_macos_menu_delegate()
+    
+    def _install_macos_menu_delegate(self):
+        """NSMenu delegate — highlight event ile state takip et."""
+        from Cocoa import NSObject
+        import objc
+        
+        # Sınıf zaten register edilmişse tekrar etme
+        if not hasattr(LanBridgeApp, '_MenuDelegate'):
+            class _MenuDelegate(NSObject):
+                def menu_willHighlightItem_(self, menu, item):
+                    pass
+                def menuDidClose_(self, menu):
+                    # Hangi item seçildi?
+                    try:
+                        sel = menu.highlightedItem()
+                        if sel is None: return
+                        title = str(sel.title())
+                        app = LanBridgeApp._current_instance
+                        if app is None: return
+                        if title == "LanBridge'i Aç":
+                            app.root.after(0, app._show_window)
+                        elif title == "Alınanlar Klasörü":
+                            app.root.after(0, lambda: open_folder(str(DOWNLOADS)))
+                        elif title == "Çıkış":
+                            app.root.after(0, app._do_quit)
+                    except Exception: pass
+            LanBridgeApp._MenuDelegate = _MenuDelegate
+        
+        LanBridgeApp._current_instance = self
+        self._menu_delegate = LanBridgeApp._MenuDelegate.alloc().init()
+        self._tray_item.menu().setDelegate_(self._menu_delegate)
     def _tray_show(self, icon=None, item=None):
         """Tepsiden 'Aç' tıklandı — virtual event ile thread-güvenli iletim."""
         try:
@@ -1222,7 +1407,7 @@ class LanBridgeApp:
         except Exception:
             try: self.root.after(0, self._show_window)
             except Exception: pass
-
+    
     def _show_window(self):
         """Pencereyi göster — ana thread'de çalışır."""
         try:
@@ -1260,18 +1445,57 @@ class LanBridgeApp:
     def _do_quit(self):
         """Gerçek kapatma — ana thread'de."""
         self._really_quit = True
-        if self._tray_icon:
+        
+        # macOS: NSStatusBar'ı önce temizle (crash önleme)
+        if sys.platform == 'darwin' and hasattr(self, '_tray_item') and self._tray_item is not None:
+            try:
+                from Cocoa import NSStatusBar
+                NSStatusBar.systemStatusBar().removeStatusItem_(self._tray_item)
+                self._tray_item = None
+            except Exception: pass
+        
+        # Windows: pystray icon stop
+        if self._tray_icon and sys.platform != 'darwin':
             try: self._tray_icon.stop()
             except Exception: pass
-        self.discovery.stop(); self.clip_monitor.stop(); self.tcp_server.stop()
+        
+        # Servisleri durdur
+        try: self.discovery.stop()
+        except Exception: pass
+        try: self.clip_monitor.stop()
+        except Exception: pass
+        try: self.tcp_server.stop()
+        except Exception: pass
+        
+        # Instance lock'u serbest bırak
+        global _instance_socket
+        if _instance_socket:
+            try: _instance_socket.close()
+            except Exception: pass
+            _instance_socket = None
+        
         try: self.root.destroy()
         except Exception: pass
 
+    def _instance_listener(self):
+        """Başka bir LanBridge instance'ı açılmaya çalışırsa SHOW sinyali al."""
+        global _instance_socket
+        if _instance_socket is None: return
+        _instance_socket.settimeout(1.0)
+        while not self._really_quit:
+            try:
+                conn, _ = _instance_socket.accept()
+                data = conn.recv(16)
+                conn.close()
+                if data == b"SHOW":
+                    self.root.after(0, self._show_window)
+            except socket.timeout: continue
+            except: break
     def _on_close(self):
         """X düğmesi: tepsi varsa gizle, yoksa gerçekten çık."""
         if self._tray_icon is not None and not self._really_quit:
             self.root.withdraw()
-            if not self._tray_notified:
+            if not self._tray_notified and sys.platform != 'darwin':
                 try:
                     self._tray_icon.notify(
                         "LanBridge arka planda çalışıyor.\n"
@@ -1282,7 +1506,7 @@ class LanBridgeApp:
                 self._tray_notified = True
         else:
             self.discovery.stop(); self.clip_monitor.stop(); self.tcp_server.stop()
-            if self._tray_icon:
+            if self._tray_icon and sys.platform != 'darwin':
                 try: self._tray_icon.stop()
                 except Exception: pass
             self.root.destroy()
