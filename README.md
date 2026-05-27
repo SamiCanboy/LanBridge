@@ -39,7 +39,7 @@ python3 --version
 ### 2. Bağımlılıkların Kurulması
 Windows CMD ekranı # karakterini yorum satırı olarak algılamadığı için toplu kopyalamalarda hata vermektedir. Ayrıca Windows'ta python3/pip3 yerine python/pip kullanımı varsayılandır.
 
-Sisteminiz için uygun olan bloktaki komutların tamamını kopyalayıp terminalinize yapıştırarak kurulumu hatasız tamamlayabilirsiniz:
+Sisteminiz için uygun olan bloktaki komutların tamamı otomatik olarak kurulacaktır ancak hata alır ve kuramazsanız aşağıdaki komutları kopyalayıp terminalinize yapıştırarak kurulumu hatasız tamamlayabilirsiniz:
 
 **🪟 Windows Kurulum Komutları
 Aşağıdaki komut satırlarını Komut İstemcisi'ne (CMD) yapıştırıp çalıştırın:**
